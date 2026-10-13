@@ -1,0 +1,12 @@
+[
+  {
+    "name": "auth_token",
+    "value": "0021c1d3e3b0434e97cf81017dd2729b6a02ab98e8b1471f9a704c2b866b5148",
+    "domain": "retrostress.net",
+    "path": "/",
+    "expires": 1794408183.680991,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  }
+]

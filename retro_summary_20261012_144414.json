@@ -1,0 +1,24 @@
+{
+  "timestamp": "2026-10-12 14:44:14",
+  "total": 4,
+  "successful": 4,
+  "failed": 0,
+  "results": [
+    {
+      "session_number": 1,
+      "success": true
+    },
+    {
+      "session_number": 2,
+      "success": true
+    },
+    {
+      "session_number": 3,
+      "success": true
+    },
+    {
+      "session_number": 4,
+      "success": true
+    }
+  ]
+}
